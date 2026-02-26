@@ -1,0 +1,114 @@
+name: CI (Only Drv.sys)
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches: [master, experimental]
+    paths-ignore:
+      # 保留原有路径忽略规则，避免非代码变更触发构建
+      - '.editorconfig'
+      - '.gitattributes'
+      - '.gitignore'
+      - 'MergeDbg.cmd'
+      - 'TestCI.cmd'
+      - '.github/codeql/codeql-config.yml'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/codeql.yml'
+      - '.github/workflows/codespell.yml'
+      - '.github/workflows/hash.yml'
+      - '.github/workflows/lupdate.yml'
+      - '.github/workflows/stale.yml'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/winget.yml'
+      - '.github/FUNDING.yml'
+      - '.github/dependabot.yml'
+      - 'Sandboxie/msgs/report/*.txt'
+      - '**/*.md'
+      - '**/*.html'
+      - '**/*.png'
+      - '**/*.bmp'
+      - '**/LICENSE*'
+      - '**/license*'
+      - '**/README*'
+      - '**/ReadMe*'
+      - '**/INSTALL*'
+      - '**/AUTHORS'
+      - '**/COPYING'
+  pull_request:
+    branches: [master, experimental]
+    paths-ignore:
+      # 保留原有路径忽略规则
+      - '.editorconfig'
+      - '.gitattributes'
+      - '.gitignore'
+      - 'MergeDbg.cmd'
+      - 'TestCI.cmd'
+      - '.github/codeql/codeql-config.yml'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/codeql.yml'
+      - '.github/workflows/codespell.yml'
+      - '.github/workflows/hash.yml'
+      - '.github/workflows/lupdate.yml'
+      - '.github/workflows/stale.yml'
+      - '.github/workflows/test.yml'
+      - '.github/workflows/winget.yml'
+      - '.github/FUNDING.yml'
+      - '.github/dependabot.yml'
+      - 'Sandboxie/msgs/report/*.txt'
+      - '**/*.md'
+      - '**/*.html'
+      - '**/*.png'
+      - '**/*.bmp'
+      - '**/LICENSE*'
+      - '**/license*'
+      - '**/README*'
+      - '**/ReadMe*'
+      - '**/INSTALL*'
+      - '**/AUTHORS'
+      - '**/COPYING'
+
+env:
+  forbuildVariables: use Installer\buildVariables.cmd file
+
+jobs:
+  # 仅保留 x64 驱动编译（如需 ARM64 可保留，按需调整）
+  Build_Drv_x64:
+    runs-on: windows-2022
+    timeout-minutes: 15  # 驱动编译耗时短，缩短超时时间
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup msbuild
+        uses: microsoft/setup-msbuild@v2
+
+      # 仅编译 x64 驱动（删除其他 Core/DLL/Tools 编译步骤）
+      - name: Build Sandboxie x64 (drv)
+        run: msbuild /t:build Sandboxie\SandboxDrv.sln /p:Configuration="SbieRelease" /p:Platform=x64 -maxcpucount:8
+
+      # 打包驱动文件（确认驱动输出路径：Sandboxie\x64\SbieRelease\SbieDrv.sys）
+      - name: Package x64 Drv
+        run: |
+          mkdir -Force driver-x64
+          copy Sandboxie\Bin\x64\SbieRelease\SbieDrv.sys driver-x64\SbieDrv_x64.sys
+          7z a SbieDrv_x64_Release.zip .\driver-x64\*
+
+      # 上传驱动 artifact（便于手动下载）
+      - name: Upload x64 Driver Artifact
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: SbieDrv_x64
+          path: SbieDrv_x64_Release.zip
+          retention-days: 60
+
+      # 自动发布到 Releases（仅 master 分支推送、非 PR 时触发）
+      - name: Create x64 Driver Release
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SbieDrv_x64_Release.zip
+          tag_name: drv-x64-v${{ github.run_number }}
+          name: SbieDrv x64 Release v${{ github.run_number }}
+          body: "仅 Sandboxie x64 驱动文件 (SbieDrv.sys)，编译配置：SbieRelease"
