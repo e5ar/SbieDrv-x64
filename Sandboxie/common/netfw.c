@@ -21,7 +21,7 @@ struct _NETFW_RULE
 	int protocol;
 };
 
-static int NetFw_PortCmp(const void * l, const void * r)
+int NetFw_PortCmp(const void * l, const void * r)
 {
 	if (*((USHORT*)l) > *((USHORT*)r))
 		return 1;
@@ -30,7 +30,7 @@ static int NetFw_PortCmp(const void * l, const void * r)
 	return 0;
 }
 
-static int NetFw_IpCmp(const void * l, const void * r)
+int NetFw_IpCmp(const void * l, const void * r)
 {
 	IP_ADDRESS* L = (IP_ADDRESS*)l;
 	IP_ADDRESS* R = (IP_ADDRESS*)r;
@@ -49,11 +49,12 @@ static int NetFw_IpCmp(const void * l, const void * r)
 NETFW_RULE* NetFw_AllocRule(POOL* pool, int MatchLevel)
 {
 #ifdef KERNEL_MODE
-#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
-	NETFW_RULE* rule = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_RULE), tzuk);
-#else
+//#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
+//	NETFW_RULE* rule = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_RULE), tzuk);
+//#else
+#pragma warning(suppress: 4996) // suppress deprecation warning
 	NETFW_RULE* rule = ExAllocatePoolWithTag(NonPagedPool, sizeof(NETFW_RULE), tzuk);
-#endif
+//#endif
 #else
     NETFW_RULE* rule = Pool_Alloc(pool, sizeof(NETFW_RULE));
 #endif
@@ -99,11 +100,12 @@ typedef struct _NETFW_PORTS
 void NetFw_RuleAddPortRange(rbtree_t* tree, USHORT PortBegin, USHORT PortEnd, POOL* pool)
 {
 #ifdef KERNEL_MODE
-#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
-	NETFW_PORTS* node = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_PORTS), tzuk);
-#else
+//#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
+//	NETFW_PORTS* node = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_PORTS), tzuk);
+//#else
+#pragma warning(suppress: 4996) // suppress deprecation warning
 	NETFW_PORTS* node = ExAllocatePoolWithTag(NonPagedPool, sizeof(NETFW_PORTS), tzuk);
-#endif
+//#endif
 #else
 	NETFW_PORTS* node = Pool_Alloc(pool, sizeof(NETFW_PORTS));
 #endif
@@ -191,11 +193,12 @@ typedef struct _NETFW_IPS
 void NetFw_RuleAddIpRange(rbtree_t* tree, IP_ADDRESS* IpBegin, IP_ADDRESS* IpEnd, POOL* pool)
 {
 #ifdef KERNEL_MODE
-#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
-	NETFW_IPS* node = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_IPS), tzuk);
-#else
+//#if (NTDDI_VERSION >= NTDDI_WIN10_VB)
+//	NETFW_IPS* node = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(NETFW_IPS), tzuk);
+//#else
+#pragma warning(suppress: 4996) // suppress deprecation warning
 	NETFW_IPS* node = ExAllocatePoolWithTag(NonPagedPool, sizeof(NETFW_IPS), tzuk);
-#endif
+//#endif
 #else
 	NETFW_IPS* node = Pool_Alloc(pool, sizeof(NETFW_IPS));
 #endif
@@ -315,7 +318,7 @@ void NetFw_AddRule(LIST* list, NETFW_RULE* new_rule)
 
 		//
 		// it seems we might be able to merge these rules
-		// now we check the convoluted case when rules havs ip's and port's set
+		// now we check the convoluted case when rules have IPs and ports set.
 		//
 
 		if ((rule->port_map.count != 0) && (rule->ip_map.count != 0)){
@@ -450,7 +453,7 @@ const WCHAR* wcsnchr(const WCHAR* str, size_t max, WCHAR ch)
 
 int _inet_pton(int af, const wchar_t* src, void* dst);
 
-int _inet_xton(const WCHAR* src, ULONG src_len, IP_ADDRESS *dst)
+int _inet_xton(const WCHAR* src, ULONG src_len, IP_ADDRESS *dst, USHORT *type)
 {
 	WCHAR tmp[46 + 1]; // INET6_ADDRSTRLEN 
 	if (src_len > ARRAYSIZE(tmp) - 1) src_len = ARRAYSIZE(tmp) - 1;
@@ -460,7 +463,7 @@ int _inet_xton(const WCHAR* src, ULONG src_len, IP_ADDRESS *dst)
 	USHORT af = wcschr(tmp, L':') != NULL ? AF_INET6 : AF_INET;
 	//dst->Type = af
     int ret = _inet_pton(af, tmp, dst->Data);
-
+	if (type) *type = af;
     return ret;
 }
 
@@ -522,16 +525,16 @@ BOOLEAN NetFw_ParseRule(NETFW_RULE* rule, const WCHAR* found_value)
                 ULONG ip_len2 = (ULONG)(ip_value - ip_str2);
 
                 IP_ADDRESS ip1;
-                _inet_xton(ip_str1, ip_len1, &ip1);
+                _inet_xton(ip_str1, ip_len1, &ip1, NULL);
                 IP_ADDRESS ip2;
-                _inet_xton(ip_str2, ip_len2, &ip2);
+                _inet_xton(ip_str2, ip_len2, &ip2, NULL);
 
                 NetFw_RuleAddIpRange(&rule->ip_map, &ip1, &ip2, rule->pool);
             }
             else
             {
                 IP_ADDRESS ip;
-                _inet_xton(ip_str1, ip_len1, &ip);
+                _inet_xton(ip_str1, ip_len1, &ip, NULL);
                 NetFw_RuleAddIpRange(&rule->ip_map, &ip, &ip, rule->pool);
             }
         }
@@ -549,6 +552,29 @@ BOOLEAN NetFw_ParseRule(NETFW_RULE* rule, const WCHAR* found_value)
     }
 
 	return TRUE;
+}
+
+
+BOOLEAN is_localhost(const struct sockaddr* name)
+{
+    if (name->sa_family == AF_INET) {
+        const SOCKADDR_IN* v4 = (const SOCKADDR_IN*)name;
+        return v4->sin_addr.s_net == 0x7f;
+    }
+    if (name->sa_family == AF_INET6) {
+        const SOCKADDR_IN6_LH* v6 = (const SOCKADDR_IN6_LH*)name;
+        return v6->sin6_addr.u.Word[0] == 0 && v6->sin6_addr.u.Word[1] == 0 &&
+            v6->sin6_addr.u.Word[2] == 0 && v6->sin6_addr.u.Word[3] == 0 &&
+            v6->sin6_addr.u.Word[4] == 0 && v6->sin6_addr.u.Word[5] == 0 &&
+            v6->sin6_addr.u.Word[6] == 0 && v6->sin6_addr.u.Byte[14] == 0 &&
+            v6->sin6_addr.u.Byte[15] == 1;
+    }
+    return FALSE;
+}
+
+BOOLEAN is_inet(const struct sockaddr* name)
+{
+    return name->sa_family == AF_INET || name->sa_family == AF_INET6;
 }
 
 
