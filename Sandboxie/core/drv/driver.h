@@ -68,8 +68,6 @@
 #define TRACE_DENY              2
 #define TRACE_IGNORE            4
 
-#define USE_PROCESS_MAP
-
 #define USE_MATCH_PATH_EX
 
 #define USE_TEMPLATE_PATHS
@@ -98,7 +96,8 @@ extern P_NtSetInformationToken          ZwSetInformationToken;
 #endif // OLD_DDK
 
 #ifdef _M_ARM64
-NTSTATUS Sbie_CallZwServiceFunction_asm(UINT_PTR arg1, UINT_PTR arg2, UINT_PTR arg3, UINT_PTR arg4, UINT_PTR arg5, UINT_PTR arg6, UINT_PTR arg7, UINT_PTR arg8, 
+NTSTATUS Sbie_CallZwServiceFunction_asm(
+    UINT_PTR arg1, UINT_PTR arg2, UINT_PTR arg3, UINT_PTR arg4, UINT_PTR arg5, UINT_PTR arg6, UINT_PTR arg7, UINT_PTR arg8, 
     UINT_PTR arg9, UINT_PTR arg10, UINT_PTR arg11, UINT_PTR arg12, UINT_PTR arg13, UINT_PTR arg14, UINT_PTR arg15, UINT_PTR arg16, UINT_PTR arg17, UINT_PTR arg18, UINT_PTR arg19,
     UINT_PTR svc_num);
 
@@ -106,9 +105,26 @@ extern void*                            Driver_KiServiceInternal;
 extern USHORT                           ZwCreateToken_num;
 extern USHORT                           ZwCreateTokenEx_num;
 #else
+#ifdef _WIN64
+NTSTATUS Sbie_CallFunction_asm(VOID* func, 
+    UINT_PTR arg1, UINT_PTR arg2, UINT_PTR arg3, UINT_PTR arg4, UINT_PTR arg5, UINT_PTR arg6, UINT_PTR arg7, UINT_PTR arg8, 
+    UINT_PTR arg9, UINT_PTR arg10, UINT_PTR arg11, UINT_PTR arg12, UINT_PTR arg13, UINT_PTR arg14, UINT_PTR arg15, UINT_PTR arg16, UINT_PTR arg17, UINT_PTR arg18, UINT_PTR arg19);
+#endif
 extern P_NtCreateToken                  ZwCreateToken;
 extern P_NtCreateTokenEx                ZwCreateTokenEx;
 #endif
+
+typedef NTSTATUS(*P_MmCopyMemory) (
+    _Out_writes_bytes_ (NumberOfBytes) PVOID TargetAddress,
+    _In_ MM_COPY_ADDRESS SourceAddress,
+    _In_ SIZE_T NumberOfBytes,
+    _In_ ULONG Flags,
+    _Out_ PSIZE_T NumberOfBytesTransferred
+);
+extern P_MmCopyMemory MyMmCopyMemory;
+
+typedef BOOLEAN(*P_PsIsWin32KFilterEnabledForProcess)(EPROCESS);
+extern P_PsIsWin32KFilterEnabledForProcess IsWin32KFilterEnabledForProcess;
 
 //---------------------------------------------------------------------------
 // Functions
@@ -138,6 +154,9 @@ extern ULONG Driver_OsBuild;
 extern BOOLEAN Driver_OsTestSigning;
 
 extern POOL *Driver_Pool;
+
+extern WCHAR *Driver_SystemRootPathNt;
+extern ULONG  Driver_SystemRootPathNt_Len;
 
 extern WCHAR *Driver_RegistryPath;
 
