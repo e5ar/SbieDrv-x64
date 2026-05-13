@@ -448,7 +448,7 @@ _FX BOOLEAN Box_ExpandString(
         while (ptr[0]) {
             if (ptr[0] == L'\\' && ptr[1] == L'\\') {
 
-                ULONG move_len = len - (ULONG)(ptr - value2) + 1;
+                ULONG move_len = len - (ULONG)(ptr - value2);
                 wmemmove(ptr, ptr + 1, move_len);
                 --len;
 
@@ -539,6 +539,7 @@ _FX BOX *Box_Clone(POOL *pool, const BOX *model)
 #undef CLONE_MEMBER
 
     box->session_id = model->session_id;
+    box->fake_admin = model->fake_admin;
 
     if (! Box_InitConfExpandArgs(pool, box)) {
         Box_Free(box);
