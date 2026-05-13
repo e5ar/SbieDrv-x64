@@ -47,6 +47,8 @@
 #include "wfp.h"
 #include "dyn_data.h"
 
+NTSTATUS File_TranslateSymlinks(WCHAR *name, ULONG max_len);
+
 //---------------------------------------------------------------------------
 // Functions
 //---------------------------------------------------------------------------
@@ -60,9 +62,15 @@ static BOOLEAN Driver_CheckOsVersion(void);
 
 static BOOLEAN Driver_InitPublicSecurity(void);
 
+static BOOLEAN Driver_FindSystemRoot();
+
 static BOOLEAN Driver_FindHomePath(UNICODE_STRING *RegistryPath);
 
 static BOOLEAN Driver_FindMissingServices(void);
+
+#ifdef _M_ARM64
+static BOOLEAN Driver_FindKiServiceInternal(void);
+#endif
 
 static void SbieDrv_DriverUnload(DRIVER_OBJECT *DriverObject);
 
@@ -73,8 +81,12 @@ static void SbieDrv_DriverUnload(DRIVER_OBJECT *DriverObject);
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text (INIT, DriverEntry)
 #pragma alloc_text (INIT, Driver_CheckOsVersion)
+#pragma alloc_text (INIT, Driver_FindSystemRoot)
 #pragma alloc_text (INIT, Driver_FindHomePath)
 #pragma alloc_text (INIT, Driver_FindMissingServices)
+#ifdef _M_ARM64
+#pragma alloc_text (INIT, Driver_FindKiServiceInternal)
+#endif
 #endif // ALLOC_PRAGMA
 
 
@@ -104,6 +116,9 @@ const WCHAR *Driver_Sandbox = L"\\Sandbox";
 const WCHAR *Driver_Empty = L"";
 
 //const WCHAR *Driver_OpenProtectedStorage = L"OpenProtectedStorage";
+
+WCHAR *Driver_SystemRootPathNt = NULL;
+ULONG  Driver_SystemRootPathNt_Len = 0;
 
 WCHAR *Driver_RegistryPath;
 
@@ -143,6 +158,11 @@ USHORT                          ZwCreateTokenEx_num         = 0;
 P_NtCreateToken                 ZwCreateToken               = NULL;
 P_NtCreateTokenEx               ZwCreateTokenEx             = NULL;
 #endif
+
+
+P_MmCopyMemory MyMmCopyMemory = NULL;
+
+P_PsIsWin32KFilterEnabledForProcess IsWin32KFilterEnabledForProcess = NULL;
 
 
 //---------------------------------------------------------------------------
@@ -190,6 +210,9 @@ _FX NTSTATUS DriverEntry(
 
     if (ok)
         Dyndata_Init();
+
+    if (ok)
+        ok = Driver_FindSystemRoot();
 
     if (ok)
         ok = Driver_FindHomePath(RegistryPath);
@@ -468,6 +491,30 @@ _FX BOOLEAN Driver_InitPublicSecurity(void)
 
 
 //---------------------------------------------------------------------------
+// Driver_FindSystemRoot
+//---------------------------------------------------------------------------
+
+
+_FX BOOLEAN Driver_FindSystemRoot()
+{
+    ULONG max_len = 256;
+    Driver_SystemRootPathNt = Mem_Alloc(Driver_Pool, (max_len + 2) * sizeof(WCHAR));
+    if (! Driver_SystemRootPathNt)
+        return FALSE;
+
+	wcscpy(Driver_SystemRootPathNt, L"\\SystemRoot");
+
+
+    if(!NT_SUCCESS(File_TranslateSymlinks(Driver_SystemRootPathNt, max_len)))
+        return FALSE;
+
+	Driver_SystemRootPathNt_Len = wcslen(Driver_SystemRootPathNt);
+	//DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "SbieDrv: SystemRoot path is %ws\n", Driver_SystemRootPathNt);
+    return TRUE;
+}
+
+
+//---------------------------------------------------------------------------
 // Driver_FindHomePath
 //---------------------------------------------------------------------------
 
@@ -608,7 +655,22 @@ _FX BOOLEAN Driver_FindHomePath(UNICODE_STRING *RegistryPath)
 #ifdef _M_ARM64
 _FX BOOLEAN Driver_FindKiServiceInternal()
 {
-    UCHAR *addr = (UCHAR *)ZwWaitForSingleObject; // pick some random Zw function
+    UCHAR *addr = NULL; // pick some random Zw function
+
+    //
+    // Driver verifier messes with the Zw imports, and this breaks the Hook_Find_ZwRoutine routine
+    // to fix this we lookup the offsets of the real functions in the export table of ntoskrnl.exe
+    // and then use these correct offsets in Hook_Find_ZwRoutine
+    //
+
+    UCHAR* kernel_base = (UCHAR*)Syscall_GetKernelBase();
+    if (kernel_base) {
+
+        ULONG_PTR offset = (ULONG_PTR)Dll_GetProc(Exe_NTOSKRNL, "ZwWaitForSingleObject", TRUE);
+        if (offset) addr = kernel_base + offset;
+    }
+
+    if(!addr) addr = (UCHAR *)ZwWaitForSingleObject;
 
     // a ZwXxx system service redirector looks like this in Windows 11 ARM64
     // B0 01 80 D2 7F 1E 00 14 00 00 00 00 00 00 00 00
@@ -668,31 +730,7 @@ void* Driver_FindMissingService(const char* ProcName, int prmcnt)
 
 _FX BOOLEAN Driver_FindMissingServices(void)
 {
-#ifdef OLD_DDK
     UNICODE_STRING uni;
-	RtlInitUnicodeString(&uni, L"ZwSetInformationToken");
-
-    //
-    // Windows 7 kernel exports ZwSetInformationToken
-    // on earlier versions of Windows, we search for it
-    //
-//#ifndef _WIN64
-    if (Driver_OsVersion < DRIVER_WINDOWS_7) {
-
-        ZwSetInformationToken = (P_NtSetInformationToken) Driver_FindMissingService("ZwSetInformationToken", 4);
-
-    } else 
-//#endif
-	{
-		ZwSetInformationToken = (P_NtSetInformationToken) MmGetSystemRoutineAddress(&uni);
-    }
-
-    if (!ZwSetInformationToken) {
-		Log_Msg1(MSG_1108, uni.Buffer);
-		return FALSE;
-	}
-#endif
-
 
     //
     // Retrieve some unexported kernel functions which may be useful
@@ -721,7 +759,6 @@ _FX BOOLEAN Driver_FindMissingServices(void)
     
     /*DbgPrint("Test 1\n");
 
-    UNICODE_STRING uni;
     OBJECT_ATTRIBUTES objattrs;
     RtlInitUnicodeString(&uni, L"\\??\\C:\\Temp\\test.txt");
     InitializeObjectAttributes(&objattrs,
@@ -746,8 +783,41 @@ _FX BOOLEAN Driver_FindMissingServices(void)
         ZwCreateTokenEx = (P_NtCreateTokenEx)Driver_FindMissingService("ZwCreateTokenEx", 17);
         //DbgPrint("ZwCreateTokenEx: %p\r\n", ZwCreateTokenEx);
     }
+    if (!ZwCreateToken)
+        Log_Msg1(MSG_1108, L"ZwCreateTokenEx");
 
 #endif
+
+#ifdef OLD_DDK
+
+	RtlInitUnicodeString(&uni, L"ZwSetInformationToken");
+
+    //
+    // Windows 7 kernel exports ZwSetInformationToken
+    // on earlier versions of Windows, we search for it
+    //
+//#ifndef _WIN64
+    if (Driver_OsVersion < DRIVER_WINDOWS_7) {
+
+        ZwSetInformationToken = (P_NtSetInformationToken) Driver_FindMissingService("ZwSetInformationToken", 4);
+
+    } else 
+//#endif
+	{
+		ZwSetInformationToken = (P_NtSetInformationToken) MmGetSystemRoutineAddress(&uni);
+    }
+
+    if (!ZwSetInformationToken) {
+		Log_Msg1(MSG_1108, uni.Buffer);
+		return FALSE;
+	}
+#endif
+
+    RtlInitUnicodeString(&uni, L"MmCopyMemory"); // not present in windows 7
+    MyMmCopyMemory = (P_MmCopyMemory) MmGetSystemRoutineAddress(&uni);
+
+    RtlInitUnicodeString(&uni, L"PsIsWin32KFilterEnabledForProcess");
+    IsWin32KFilterEnabledForProcess = (P_PsIsWin32KFilterEnabledForProcess) MmGetSystemRoutineAddress(&uni);
 
     return TRUE;
 }
@@ -762,6 +832,14 @@ _FX void SbieDrv_DriverUnload(DRIVER_OBJECT *DriverObject)
 {
     Driver_Unloading = TRUE;
 
+    // Make sure notify callbacks bail out immediately during unload.
+    Process_ReadyToSandbox = FALSE;
+    KeMemoryBarrier();
+
+    // Unregister process/image notify callbacks before tearing down
+    // subsystems that may be touched from process create/delete paths.
+    Process_Unload(FALSE);
+
     //
     // unload just the hooks, in case this is a partial unload
     //
@@ -773,7 +851,6 @@ _FX void SbieDrv_DriverUnload(DRIVER_OBJECT *DriverObject)
     File_Unload();
     Obj_Unload();
     Thread_Unload();
-    Process_Unload(FALSE);
 
     //
     // if this is a full unload, then we can now unload everything else
@@ -824,11 +901,7 @@ _FX NTSTATUS Driver_Api_Unload(PROCESS *proc, ULONG64 *parms)
     ExAcquireResourceExclusiveLite(Process_ListLock, TRUE);
 
     ok = FALSE;
-#ifdef USE_PROCESS_MAP
     if (Process_Map.nnodes == 0) {
-#else
-    if (! List_Count(&Process_List)) {
-#endif
         if (Api_Disable())
             ok = TRUE;
     }
